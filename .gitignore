@@ -1,3 +1,11 @@
 /target
 /Cargo.lock
 /dist
+**/*.rs.bk
+.idea/
+.vscode/
+*.pdb
+*.ilk
+*.exp
+*.lib
+.DS_Store
