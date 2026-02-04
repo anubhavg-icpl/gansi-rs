@@ -36,7 +36,7 @@ fn dist() -> Result<(), DynError> {
     fs::create_dir_all(dist_dir())?;
 
     dist_binary("gansi-com", "gansi_com.dll")?;
-    dist_binary("gansi-cli", "gansi-cli.exe")?;
+    dist_binary("gansi-cli", "gansi.exe")?;
 
     Ok(())
 }

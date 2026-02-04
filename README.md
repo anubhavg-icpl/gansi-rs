@@ -33,28 +33,40 @@ cargo xtask dist
 Artifacts land under `target\release\` (or `dist\` via xtask):
 
 - `gansi_com.dll`
-- `gansi-cli.exe`
+- `gansi.exe`
 
 ## Usage
 
+Binary name: `gansi` (from the `gansi-cli` package).
+
 ```powershell
 # Register COM + AMSI provider (admin)
-gansi-cli.exe --register [path\to\gansi_com.dll] [pipe_suffix]
+gansi register
+gansi register --dll .\gansi_com.dll --pipe gansi
 
 # Trace events only (provider already registered)
-gansi-cli.exe --trace [path\to\gansi_com.dll] [pipe_suffix]
+gansi trace
+gansi trace --pipe gansi
 
-# Register and trace in one process
-gansi-cli.exe --all [path\to\gansi_com.dll] [pipe_suffix]
+# Register and live-trace (auto-unregister on exit)
+gansi watch
+gansi watch --dll .\gansi_com.dll --pipe gansi
 
 # Unregister
-gansi-cli.exe --unregister [path\to\gansi_com.dll]
+gansi unregister
+
+# Help / version
+gansi --help
+gansi -V
 ```
+
+Short aliases: `gansi r`, `gansi u`, `gansi t`, `gansi a` (watch/all).
 
 Defaults:
 
 - DLL: `gansi_com.dll` (must be loadable from cwd/`PATH`)
 - Pipe: `\\.\pipe\gansi`
+- Log level: `warn` (`--log debug` or `GANSI_LOG=debug`)
 
 ## Architecture (brief)
 
