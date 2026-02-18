@@ -1,4 +1,5 @@
 mod com_wrapper;
+mod defender;
 mod pipe_server;
 mod ui;
 
@@ -12,6 +13,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use com_wrapper::{ComWrapper, GansiComWrapper};
+use defender::DefenderCmd;
 use shared::{FfiString, GansiMessage, PipeName, constants::GANSI_PIPE_SUFFIX};
 use tokio::{runtime::Runtime, time::timeout};
 
@@ -28,18 +30,22 @@ static EVENT_COUNT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     bin_name = "gansi",
     author,
     version,
-    about = "Gansi — Windows AMSI provider control plane",
+    about = "Gansi — Windows AMSI provider + Defender control plane",
     long_about = "Register, unregister, and live-trace the Gansi AMSI COM provider.\n\
-                  Requires Windows + elevated shell for registration.",
+                  Manage Microsoft Defender Antivirus via the official Defender PowerShell module.\n\
+                  Requires Windows; elevation for registration and most Defender preference changes.",
     propagate_version = true,
     styles = clap_styles(),
     disable_help_subcommand = true,
     after_help = "Examples:\n  \
         gansi register\n  \
-        gansi register --dll .\\gansi_com.dll --pipe gansi\n  \
-        gansi trace\n  \
         gansi watch\n  \
-        gansi unregister\n"
+        gansi defender health\n  \
+        gansi defender status\n  \
+        gansi defender scan --kind quick\n  \
+        gansi defender exclude add --path C:\\lab\\gansi\n  \
+        gansi defender lab-prep --dir .\\dist\n  \
+        gansi defender realtime status\n"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -91,6 +97,10 @@ enum Commands {
         #[arg(long, short = 'p', default_value = GANSI_PIPE_SUFFIX, value_name = "SUFFIX")]
         pipe: String,
     },
+
+    /// Microsoft Defender Antivirus management (status, scans, exclusions, prefs)
+    #[command(visible_alias = "def")]
+    Defender(#[command(subcommand)] DefenderCmd),
 }
 
 fn clap_styles() -> clap::builder::Styles {
@@ -108,11 +118,9 @@ fn clap_styles() -> clap::builder::Styles {
 fn main() {
     let cli = Cli::parse();
 
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(cli.log.as_str()),
-    )
-    .format_timestamp_secs()
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(cli.log.as_str()))
+        .format_timestamp_secs()
+        .init();
 
     if let Err(err) = run(cli) {
         ui::banner();
@@ -164,6 +172,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             let rt = Runtime::new()?;
             rt.block_on(trace_amsi_events(pipe_name.as_str()))?;
+        },
+        Commands::Defender(cmd) => {
+            defender::run(cmd)?;
         },
     }
 

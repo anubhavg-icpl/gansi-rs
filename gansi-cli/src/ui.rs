@@ -16,7 +16,7 @@ pub fn banner() {
     );
     println!(
         "  {}",
-        dim.apply_to("Gain · AMSI provider · local script telemetry")
+        dim.apply_to("Gain · AMSI provider · Defender control · local telemetry")
     );
     println!(
         "  {}",

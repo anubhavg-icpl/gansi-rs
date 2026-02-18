@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CLI for registering and tracing the Gansi AMSI provider"
+description = "CLI for Gansi AMSI provider control plane and Microsoft Defender management"
 
 [[bin]]
 name = "gansi"
