@@ -22,9 +22,9 @@ Gansi is an AMSI research/monitoring component:
 
 ### Defender management (`gansi defender`)
 
-The CLI can invoke the official Windows **Defender PowerShell module** to read status and change preferences (scans, exclusions, RTP, MAPS, etc.).
+The CLI uses native **Defender WMI classes** (`ROOT\Microsoft\Windows\Defender`) to read status and change preferences (scans, exclusions, RTP, MAPS, etc.).
 
 - Intended for **authorized administrators** and **lab** workflows.
 - Preference changes may be blocked by Tamper Protection, Group Policy, Intune, or Defender for Endpoint.
 - Do **not** use exclusion/disable features to hide malware or weaken production hosts without change control.
-- Gansi does not bypass Defender security boundaries; it uses the same admin APIs Microsoft documents.
+- Gansi does not bypass Defender security boundaries; it uses the same WMI admin surface Microsoft documents for Defender management.

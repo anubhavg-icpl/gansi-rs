@@ -61,7 +61,7 @@ It plugs into the same OS path used by PowerShell, script hosts, and other AMSI-
 3. Optionally reports interesting content as structured events over a **local named pipe**.
 4. Remains a **passive sensor by default** — it prioritizes visibility and telemetry over hard blocking.
 
-The control plane is the `gansi` CLI: register / unregister the provider, live-trace events, watch (register + trace with clean teardown), and **manage Microsoft Defender** (status, scans, exclusions, preferences) through the official Defender PowerShell module.
+The control plane is the `gansi` CLI: register / unregister the provider, live-trace events, watch (register + trace with clean teardown), and **manage Microsoft Defender** (status, scans, exclusions, preferences) through native WMI (`ROOT\Microsoft\Windows\Defender`).
 
 <p align="center">
   <img src="docs/assets/hero-banner.webp" alt="Gansi hero banner" width="100%" />
@@ -455,7 +455,7 @@ Best default for labs: one elevated process, full lifecycle, Ctrl+C to stop.
 
 ## Microsoft Defender management
 
-Gansi can operate **alongside** Microsoft Defender Antivirus. The CLI exposes an admin-oriented control plane that shells out to the official **Defender PowerShell module** (`Import-Module Defender`) — the same surface documented by Microsoft (`Get-MpComputerStatus`, `Get-MpPreference`, `Set-MpPreference`, `Add-MpPreference`, `Start-MpScan`, `Update-MpSignature`, etc.).
+Gansi can operate **alongside** Microsoft Defender Antivirus. The CLI exposes an admin-oriented control plane that talks to Microsoft Defender through **native WMI/COM** (`IWbemLocator` / `IWbemServices` in the `windows` crate) against `ROOT\Microsoft\Windows\Defender` — the same CIM classes the PowerShell Defender module wraps (`MSFT_MpComputerStatus`, `MSFT_MpPreference`, `MSFT_MpScan`, `MSFT_MpSignature`, `MSFT_MpThreat*`). **No PowerShell host is spawned.**
 
 > **Not a bypass kit.** Preference changes require elevation, may be blocked by **Tamper Protection**, **GPO/Intune**, or **MDE** policy. Disabling protections is for **lab / authorized admin** scenarios only.
 
@@ -528,9 +528,10 @@ gansi defender lab-prep --dir .\dist
 
 ### Implementation notes
 
-- Backend: `powershell.exe -NoProfile -NonInteractive` + `ConvertTo-Json`
-- Module: `Defender` (built into Windows client/server with Defender AV)
-- Failures surface stderr from PowerShell (policy, missing module, non-Windows)
+- Backend: native WMI via `windows` crate (`Win32_System_Wmi`, `Win32_System_Com`, `Win32_System_Variant`)
+- Namespace: `ROOT\Microsoft\Windows\Defender` / `ProtectionManagement.dll`
+- Methods: `MSFT_MpPreference.Add|Remove|Set`, `MSFT_MpScan.Start`, `MSFT_MpSignature.Update`, `MSFT_MpThreat.Remove`
+- Failures surface COM/WMI `HRESULT`s (access denied, namespace missing, tamper/policy blocks)
 - Gansi does **not** replace Defender; it coexists as an additional AMSI provider
 
 ### Recommended lab sequence
