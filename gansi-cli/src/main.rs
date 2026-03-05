@@ -32,7 +32,8 @@ static EVENT_COUNT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     version,
     about = "Gansi — Windows AMSI provider + Defender control plane",
     long_about = "Register, unregister, and live-trace the Gansi AMSI COM provider.\n\
-                  Manage Microsoft Defender Antivirus via the official Defender PowerShell module.\n\
+                  Manage Microsoft Defender Antivirus via native WMI \
+                  (ROOT\\Microsoft\\Windows\\Defender — no PowerShell).\n\
                   Requires Windows; elevation for registration and most Defender preference changes.",
     propagate_version = true,
     styles = clap_styles(),

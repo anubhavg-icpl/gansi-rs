@@ -1,4 +1,4 @@
-mod ps;
+mod wmi;
 
 use clap::{Subcommand, ValueEnum};
 use serde_json::Value;
@@ -11,7 +11,7 @@ pub enum DefenderCmd {
     #[command(visible_alias = "h")]
     Health,
 
-    /// Microsoft Defender computer status (Get-MpComputerStatus)
+    /// Microsoft Defender computer status (MSFT_MpComputerStatus)
     #[command(visible_alias = "st")]
     Status {
         /// Emit raw JSON
@@ -19,7 +19,7 @@ pub enum DefenderCmd {
         json: bool,
     },
 
-    /// Defender preferences snapshot (Get-MpPreference)
+    /// Defender preferences snapshot (MSFT_MpPreference)
     #[command(visible_alias = "pref")]
     Prefs {
         /// Emit raw JSON
@@ -27,7 +27,7 @@ pub enum DefenderCmd {
         json: bool,
     },
 
-    /// Start an antivirus scan (Start-MpScan)
+    /// Start an antivirus scan (MSFT_MpScan.Start)
     Scan {
         /// Scan type
         #[arg(long, short = 't', value_enum, default_value_t = ScanKind::Quick)]
@@ -38,11 +38,11 @@ pub enum DefenderCmd {
         path: Option<String>,
     },
 
-    /// Update antivirus signatures (Update-MpSignature)
+    /// Update antivirus signatures (MSFT_MpSignature.Update)
     #[command(visible_alias = "sig")]
     Update,
 
-    /// Threat detection history (Get-MpThreatDetection)
+    /// Threat detection history (MSFT_MpThreatDetection)
     Threats {
         /// Limit rows after sort (0 = all)
         #[arg(long, short = 'n', default_value_t = 25)]
@@ -53,7 +53,7 @@ pub enum DefenderCmd {
         json: bool,
     },
 
-    /// Known threat catalog lookup (Get-MpThreatCatalog) — optional filter
+    /// Known threat catalog lookup (MSFT_MpThreatCatalog) — optional filter
     Catalog {
         /// Substring filter on ThreatName
         #[arg(long, short = 'f')]
@@ -128,7 +128,7 @@ pub enum DefenderCmd {
         dir: String,
     },
 
-    /// Remove active threats (Remove-MpThreat) — admin
+    /// Remove active threats (MSFT_MpThreat.Remove) — admin
     #[command(name = "remove-threats")]
     RemoveThreats,
 }
@@ -218,10 +218,10 @@ pub fn run(cmd: DefenderCmd) -> Result<(), Box<dyn std::error::Error>> {
 
 fn health() -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · health");
-    ui::info("querying Microsoft Defender (PowerShell module)…");
+    ui::info("querying Microsoft Defender via WMI (ROOT\\Microsoft\\Windows\\Defender)…");
 
-    let st = ps::get_json("Get-MpComputerStatus")?;
-    let pr = ps::get_json("Get-MpPreference")?;
+    let st = wmi::get_status()?;
+    let pr = wmi::get_preference()?;
 
     let enabled = |v: &Value, k: &str| bool_field(v, k).unwrap_or(false);
 
@@ -330,7 +330,7 @@ fn health() -> Result<(), Box<dyn std::error::Error>> {
 
 fn status(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · status");
-    let v = ps::get_json("Get-MpComputerStatus")?;
+    let v = wmi::get_status()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
@@ -368,7 +368,7 @@ fn status(json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 fn prefs(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · preferences");
-    let v = ps::get_json("Get-MpPreference")?;
+    let v = wmi::get_preference()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
@@ -403,36 +403,34 @@ fn prefs(json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 fn scan(kind: ScanKind, path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · scan");
-    let script = match kind {
+    // MSFT_MpScan.Start ScanType: 1 Quick, 2 Full, 3 Custom
+    let (scan_type, path_arg) = match kind {
         ScanKind::Quick => {
-            ui::kv("type", "QuickScan");
-            "Start-MpScan -ScanType QuickScan".to_string()
+            ui::kv("type", "Quick (1)");
+            (1u8, None)
         },
         ScanKind::Full => {
-            ui::kv("type", "FullScan");
-            "Start-MpScan -ScanType FullScan".to_string()
+            ui::kv("type", "Full (2)");
+            (2u8, None)
         },
         ScanKind::Custom => {
             let p = path.ok_or("custom scan requires --path")?;
-            ui::kv("type", "CustomScan");
+            ui::kv("type", "Custom (3)");
             ui::kv("path", p);
-            format!(
-                "Start-MpScan -ScanType CustomScan -ScanPath {}",
-                ps::ps_quote(p)
-            )
+            (3u8, Some(p))
         },
     };
-    ui::info("starting scan (may take a while)…");
-    ps::run_ok(&script)?;
-    ui::ok("scan command completed");
+    ui::info("MSFT_MpScan.Start via WMI…");
+    wmi::start_scan(scan_type, path_arg)?;
+    ui::ok("scan started");
     println!();
     Ok(())
 }
 
 fn update_sigs() -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · signature update");
-    ui::info("Update-MpSignature…");
-    ps::run_ok("Update-MpSignature")?;
+    ui::info("MSFT_MpSignature.Update via WMI…");
+    wmi::update_signature()?;
     ui::ok("signature update requested");
     println!();
     Ok(())
@@ -440,9 +438,7 @@ fn update_sigs() -> Result<(), Box<dyn std::error::Error>> {
 
 fn threats(limit: usize, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · threats");
-    let v = ps::get_json(
-        "Get-MpThreatDetection | Sort-Object InitialDetectionTime -Descending",
-    )?;
+    let v = wmi::get_threat_detections()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
@@ -490,15 +486,7 @@ fn threats(limit: usize, json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 fn catalog(filter: Option<&str>, limit: usize) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · threat catalog");
-    let script = if let Some(f) = filter {
-        format!(
-            "Get-MpThreatCatalog | Where-Object {{ $_.ThreatName -like {} }} | Select-Object -First {limit}",
-            ps::ps_quote(&format!("*{f}*"))
-        )
-    } else {
-        format!("Get-MpThreatCatalog | Select-Object -First {limit}")
-    };
-    let v = ps::get_json(&script)?;
+    let v = wmi::get_threat_catalog(limit, filter)?;
     let rows = as_array(&v);
     if rows.is_empty() {
         ui::info("no catalog rows");
@@ -518,9 +506,7 @@ fn exclude(cmd: ExcludeCmd) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         ExcludeCmd::List { json } => {
             ui::section("defender · exclusions");
-            let v = ps::get_json(
-                "Get-MpPreference | Select-Object ExclusionPath,ExclusionExtension,ExclusionProcess,ExclusionIpAddress",
-            )?;
+            let v = wmi::get_preference()?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&v)?);
                 return Ok(());
@@ -543,34 +529,21 @@ fn exclude(cmd: ExcludeCmd) -> Result<(), Box<dyn std::error::Error>> {
             if path.is_empty() && extension.is_empty() && process.is_empty() && ip.is_empty() {
                 return Err("specify at least one of --path / --extension / --process / --ip".into());
             }
-            let mut parts = Vec::new();
+            let mut args = Vec::new();
             if !path.is_empty() {
-                parts.push(format!(
-                    "-ExclusionPath {}",
-                    ps::ps_string_array(&path)
-                ));
+                args.push(("ExclusionPath", wmi::WmiArg::StrArray(path)));
             }
             if !extension.is_empty() {
-                parts.push(format!(
-                    "-ExclusionExtension {}",
-                    ps::ps_string_array(&extension)
-                ));
+                args.push(("ExclusionExtension", wmi::WmiArg::StrArray(extension)));
             }
             if !process.is_empty() {
-                parts.push(format!(
-                    "-ExclusionProcess {}",
-                    ps::ps_string_array(&process)
-                ));
+                args.push(("ExclusionProcess", wmi::WmiArg::StrArray(process)));
             }
             if !ip.is_empty() {
-                parts.push(format!(
-                    "-ExclusionIpAddress {}",
-                    ps::ps_string_array(&ip)
-                ));
+                args.push(("ExclusionIpAddress", wmi::WmiArg::StrArray(ip)));
             }
-            let script = format!("Add-MpPreference {}", parts.join(" "));
-            ui::info(&script);
-            ps::run_ok(&script)?;
+            ui::info("MSFT_MpPreference.Add via WMI…");
+            wmi::preference_add(&args)?;
             ui::ok("exclusions added (admin + policy permitting)");
             println!();
             Ok(())
@@ -585,34 +558,21 @@ fn exclude(cmd: ExcludeCmd) -> Result<(), Box<dyn std::error::Error>> {
             if path.is_empty() && extension.is_empty() && process.is_empty() && ip.is_empty() {
                 return Err("specify at least one of --path / --extension / --process / --ip".into());
             }
-            let mut parts = Vec::new();
+            let mut args = Vec::new();
             if !path.is_empty() {
-                parts.push(format!(
-                    "-ExclusionPath {}",
-                    ps::ps_string_array(&path)
-                ));
+                args.push(("ExclusionPath", wmi::WmiArg::StrArray(path)));
             }
             if !extension.is_empty() {
-                parts.push(format!(
-                    "-ExclusionExtension {}",
-                    ps::ps_string_array(&extension)
-                ));
+                args.push(("ExclusionExtension", wmi::WmiArg::StrArray(extension)));
             }
             if !process.is_empty() {
-                parts.push(format!(
-                    "-ExclusionProcess {}",
-                    ps::ps_string_array(&process)
-                ));
+                args.push(("ExclusionProcess", wmi::WmiArg::StrArray(process)));
             }
             if !ip.is_empty() {
-                parts.push(format!(
-                    "-ExclusionIpAddress {}",
-                    ps::ps_string_array(&ip)
-                ));
+                args.push(("ExclusionIpAddress", wmi::WmiArg::StrArray(ip)));
             }
-            let script = format!("Remove-MpPreference {}", parts.join(" "));
-            ui::info(&script);
-            ps::run_ok(&script)?;
+            ui::info("MSFT_MpPreference.Remove via WMI…");
+            wmi::preference_remove(&args)?;
             ui::ok("exclusions removed (admin + policy permitting)");
             println!();
             Ok(())
@@ -620,7 +580,7 @@ fn exclude(cmd: ExcludeCmd) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// `disable_prop` is the Get/Set-MpPreference property that means "feature is off" when true.
+/// `disable_prop` is the MSFT_MpPreference property that means "feature is off" when true.
 fn toggle_bool(
     label: &str,
     disable_prop: &str,
@@ -630,14 +590,13 @@ fn toggle_bool(
     ui::section(&format!("defender · {label}"));
     match cmd {
         ToggleCmd::Status => {
-            let v = ps::get_json("Get-MpPreference")?;
+            let v = wmi::get_preference()?;
             let disabled = bool_field(&v, disable_prop).unwrap_or(false);
             let enabled = if inverted { !disabled } else { disabled };
             ui::kv("enabled", on_off(enabled));
             ui::kv(disable_prop, yes_no(disabled));
-            // also computer status realtime if relevant
             if disable_prop == "DisableRealtimeMonitoring" {
-                if let Ok(st) = ps::get_json("Get-MpComputerStatus") {
+                if let Ok(st) = wmi::get_status() {
                     ui::kv(
                         "RTP live",
                         on_off(bool_field(&st, "RealTimeProtectionEnabled").unwrap_or(false)),
@@ -652,20 +611,18 @@ fn toggle_bool(
             Ok(())
         },
         ToggleCmd::On => {
-            let val = if inverted { "$false" } else { "$true" };
-            let script = format!("Set-MpPreference -{disable_prop} {val}");
-            ui::info(&script);
-            ps::run_ok(&script)?;
+            let disable = if inverted { false } else { true };
+            ui::info(format!("MSFT_MpPreference.Set {disable_prop}={disable}"));
+            wmi::preference_set(&[(disable_prop, wmi::WmiArg::Bool(disable))])?;
             ui::ok(format!("{label} set to ON (if policy allows)"));
             println!();
             Ok(())
         },
         ToggleCmd::Off => {
-            let val = if inverted { "$true" } else { "$false" };
-            let script = format!("Set-MpPreference -{disable_prop} {val}");
-            ui::warn("disabling protection features requires admin; Tamper Protection / GPO may block this");
-            ui::info(&script);
-            ps::run_ok(&script)?;
+            let disable = if inverted { true } else { false };
+            ui::warn("disabling protection requires admin; Tamper Protection / GPO may block this");
+            ui::info(format!("MSFT_MpPreference.Set {disable_prop}={disable}"));
+            wmi::preference_set(&[(disable_prop, wmi::WmiArg::Bool(disable))])?;
             ui::ok(format!("{label} set to OFF (if policy allows)"));
             println!();
             Ok(())
@@ -680,9 +637,7 @@ fn cloud(
 ) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · cloud / MAPS");
     if show || (maps.is_none() && block_level.is_none()) {
-        let v = ps::get_json(
-            "Get-MpPreference | Select-Object MAPSReporting,CloudBlockLevel,CloudExtendedTimeout,SubmitSamplesConsent",
-        )?;
+        let v = wmi::get_preference()?;
         print_object_kvs(&v, &[
             "MAPSReporting",
             "CloudBlockLevel",
@@ -692,17 +647,16 @@ fn cloud(
         ui::info("MAPS: 0=Disabled 1=Basic 2=Advanced");
         ui::info("CloudBlockLevel: 0 Default, 1 Moderate, 2 High, 4 HighPlus, 6 ZeroTolerance");
     }
-    let mut parts = Vec::new();
+    let mut args = Vec::new();
     if let Some(m) = maps {
-        parts.push(format!("-MAPSReporting {m}"));
+        args.push(("MAPSReporting", wmi::WmiArg::U8(m as u8)));
     }
     if let Some(b) = block_level {
-        parts.push(format!("-CloudBlockLevel {b}"));
+        args.push(("CloudBlockLevel", wmi::WmiArg::U8(b as u8)));
     }
-    if !parts.is_empty() {
-        let script = format!("Set-MpPreference {}", parts.join(" "));
-        ui::info(&script);
-        ps::run_ok(&script)?;
+    if !args.is_empty() {
+        ui::info("MSFT_MpPreference.Set cloud prefs via WMI…");
+        wmi::preference_set(&args)?;
         ui::ok("cloud preferences updated");
     }
     println!();
@@ -712,9 +666,7 @@ fn cloud(
 fn cfa(mode: Option<u32>, show: bool) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · controlled folder access");
     if show || mode.is_none() {
-        let v = ps::get_json(
-            "Get-MpPreference | Select-Object EnableControlledFolderAccess,ControlledFolderAccessProtectedFolders,ControlledFolderAccessAllowedApplications",
-        )?;
+        let v = wmi::get_preference()?;
         print_object_kvs(&v, &[
             "EnableControlledFolderAccess",
             "ControlledFolderAccessProtectedFolders",
@@ -723,9 +675,8 @@ fn cfa(mode: Option<u32>, show: bool) -> Result<(), Box<dyn std::error::Error>> 
         ui::info("mode: 0 Disabled, 1 Enabled, 2 AuditMode");
     }
     if let Some(m) = mode {
-        let script = format!("Set-MpPreference -EnableControlledFolderAccess {m}");
-        ui::info(&script);
-        ps::run_ok(&script)?;
+        ui::info(format!("MSFT_MpPreference.Set EnableControlledFolderAccess={m}"));
+        wmi::preference_set(&[("EnableControlledFolderAccess", wmi::WmiArg::U8(m as u8))])?;
         ui::ok("controlled folder access updated");
     }
     println!();
@@ -735,16 +686,13 @@ fn cfa(mode: Option<u32>, show: bool) -> Result<(), Box<dyn std::error::Error>> 
 fn netprot(mode: Option<u32>, show: bool) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · network protection");
     if show || mode.is_none() {
-        let v = ps::get_json(
-            "Get-MpPreference | Select-Object EnableNetworkProtection",
-        )?;
+        let v = wmi::get_preference()?;
         print_object_kvs(&v, &["EnableNetworkProtection"]);
         ui::info("mode: 0 Disabled, 1 Enabled, 2 AuditMode");
     }
     if let Some(m) = mode {
-        let script = format!("Set-MpPreference -EnableNetworkProtection {m}");
-        ui::info(&script);
-        ps::run_ok(&script)?;
+        ui::info(format!("MSFT_MpPreference.Set EnableNetworkProtection={m}"));
+        wmi::preference_set(&[("EnableNetworkProtection", wmi::WmiArg::U8(m as u8))])?;
         ui::ok("network protection updated");
     }
     println!();
@@ -754,16 +702,14 @@ fn netprot(mode: Option<u32>, show: bool) -> Result<(), Box<dyn std::error::Erro
 fn lab_prep(dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · lab-prep");
     ui::kv("dir", dir);
-    ui::info("adding path + process exclusions for Gansi lab artifacts");
+    ui::info("MSFT_MpPreference.Add exclusions for Gansi lab artifacts");
     let dll = format!("{dir}\\gansi_com.dll");
     let exe = format!("{dir}\\gansi.exe");
-    let script = format!(
-        "Add-MpPreference -ExclusionPath {p} -ExclusionProcess {procs}",
-        p = ps::ps_string_array(&[dir.to_string(), dll.clone(), exe.clone()]),
-        procs = ps::ps_string_array(std::slice::from_ref(&exe)),
-    );
-    ui::info(&script);
-    ps::run_ok(&script)?;
+    let paths = vec![dir.to_string(), dll, exe.clone()];
+    wmi::preference_add(&[
+        ("ExclusionPath", wmi::WmiArg::StrArray(paths)),
+        ("ExclusionProcess", wmi::WmiArg::StrArray(vec![exe])),
+    ])?;
     ui::ok("lab exclusions applied (admin + policy permitting)");
     ui::warn("remove with: gansi defender exclude remove --path <dir>");
     println!();
@@ -772,9 +718,9 @@ fn lab_prep(dir: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 fn remove_threats() -> Result<(), Box<dyn std::error::Error>> {
     ui::section("defender · remove threats");
-    ui::warn("Remove-MpThreat clears active threats — admin required");
-    ps::run_ok("Remove-MpThreat")?;
-    ui::ok("Remove-MpThreat completed");
+    ui::warn("MSFT_MpThreat.Remove — admin required");
+    wmi::remove_threats()?;
+    ui::ok("remove threats completed");
     println!();
     Ok(())
 }
