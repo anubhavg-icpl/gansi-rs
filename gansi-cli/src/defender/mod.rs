@@ -595,23 +595,23 @@ fn toggle_bool(
             let enabled = if inverted { !disabled } else { disabled };
             ui::kv("enabled", on_off(enabled));
             ui::kv(disable_prop, yes_no(disabled));
-            if disable_prop == "DisableRealtimeMonitoring" {
-                if let Ok(st) = wmi::get_status() {
-                    ui::kv(
-                        "RTP live",
-                        on_off(bool_field(&st, "RealTimeProtectionEnabled").unwrap_or(false)),
-                    );
-                    ui::kv(
-                        "tamper",
-                        on_off(bool_field(&st, "IsTamperProtected").unwrap_or(false)),
-                    );
-                }
+            if disable_prop == "DisableRealtimeMonitoring"
+                && let Ok(st) = wmi::get_status()
+            {
+                ui::kv(
+                    "RTP live",
+                    on_off(bool_field(&st, "RealTimeProtectionEnabled").unwrap_or(false)),
+                );
+                ui::kv(
+                    "tamper",
+                    on_off(bool_field(&st, "IsTamperProtected").unwrap_or(false)),
+                );
             }
             println!();
             Ok(())
         },
         ToggleCmd::On => {
-            let disable = if inverted { false } else { true };
+            let disable = !inverted;
             ui::info(format!("MSFT_MpPreference.Set {disable_prop}={disable}"));
             wmi::preference_set(&[(disable_prop, wmi::WmiArg::Bool(disable))])?;
             ui::ok(format!("{label} set to ON (if policy allows)"));
@@ -619,7 +619,7 @@ fn toggle_bool(
             Ok(())
         },
         ToggleCmd::Off => {
-            let disable = if inverted { true } else { false };
+            let disable = inverted;
             ui::warn("disabling protection requires admin; Tamper Protection / GPO may block this");
             ui::info(format!("MSFT_MpPreference.Set {disable_prop}={disable}"));
             wmi::preference_set(&[(disable_prop, wmi::WmiArg::Bool(disable))])?;
