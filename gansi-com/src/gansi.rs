@@ -84,6 +84,13 @@ impl Gansi {
         let base = format!("amsi-{}-{}", process_info.pid(), process_info.tid());
         let log_dir = "C:\\gansi";
 
+        // The DLL loads into arbitrary AMSI hosts (PowerShell, WScript, …), many
+        // unelevated. If the log directory can't be created, skip file logging
+        // entirely rather than letting `fern` spam write errors on every record.
+        if std::fs::create_dir_all(log_dir).is_err() {
+            return Ok(());
+        }
+
         let mut logger = Dispatch::new().format(|out, message, record| {
             out.finish(format_args!(
                 "[{}][{}][{}::{}] {}",
