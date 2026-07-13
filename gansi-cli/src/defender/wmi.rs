@@ -5,10 +5,10 @@
 
 use std::mem::ManuallyDrop;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use serde_json::{json, Map, Value};
 use windows::{
-    core::{w, BSTR, Interface, PCWSTR},
+    core::{w, BSTR, PCWSTR},
     Win32::{
         Foundation::{VARIANT_FALSE, VARIANT_TRUE},
         System::{
@@ -28,7 +28,8 @@ use windows::{
             },
             Wmi::{
                 IEnumWbemClassObject, IWbemClassObject, IWbemLocator, IWbemServices, WbemLocator,
-                WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE,
+                WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_GENERIC_FLAG_TYPE,
+                WBEM_INFINITE,
             },
         },
     },
@@ -40,7 +41,10 @@ const RPC_C_AUTHZ_NONE: u32 = 0;
 
 pub struct DefenderWmi {
     com_owned: bool,
-    services: IWbemServices,
+    /// Wrapped in `ManuallyDrop` so the interface is released *before*
+    /// `CoUninitialize` in `Drop` — releasing a COM proxy after the apartment
+    /// is torn down is an access violation.
+    services: ManuallyDrop<IWbemServices>,
 }
 
 impl DefenderWmi {
@@ -100,7 +104,7 @@ impl DefenderWmi {
 
         Ok(Self {
             com_owned,
-            services,
+            services: ManuallyDrop::new(services),
         })
     }
 
@@ -148,9 +152,18 @@ impl DefenderWmi {
         method: &str,
         args: &[(&str, WmiArg)],
     ) -> Result<Value, Box<dyn std::error::Error>> {
-        let class_obj =
-            unsafe { self.services.Get(&BSTR::from(class), 0, None) }
-                .with_context(|| format!("Get({class})"))?;
+        let mut class_obj: Option<IWbemClassObject> = None;
+        unsafe {
+            self.services.GetObject(
+                &BSTR::from(class),
+                WBEM_GENERIC_FLAG_TYPE(0),
+                None,
+                Some(&mut class_obj),
+                None,
+            )
+        }
+        .with_context(|| format!("GetObject({class})"))?;
+        let class_obj = class_obj.with_context(|| format!("GetObject({class}) returned null"))?;
 
         let mut in_sig: Option<IWbemClassObject> = None;
         let mut out_sig: Option<IWbemClassObject> = None;
@@ -184,23 +197,33 @@ impl DefenderWmi {
             None => None,
         };
 
-        let out = unsafe {
+        let mut out: Option<IWbemClassObject> = None;
+        unsafe {
             self.services.ExecMethod(
                 &BSTR::from(class),
                 &BSTR::from(method),
+                WBEM_GENERIC_FLAG_TYPE(0),
+                None,
                 in_params.as_ref(),
-                0,
+                Some(&mut out),
                 None,
             )
         }
         .with_context(|| format!("ExecMethod({class}.{method})"))?;
 
-        object_to_json(&out)
+        // Some methods (Set/Add/Remove/Update) may return no out-params object.
+        match out {
+            Some(o) => object_to_json(&o),
+            None => Ok(Value::Null),
+        }
     }
 }
 
 impl Drop for DefenderWmi {
     fn drop(&mut self) {
+        // Release the COM interface first, then uninitialize the apartment.
+        // Reversing this order releases a proxy on a torn-down apartment (crash).
+        unsafe { ManuallyDrop::drop(&mut self.services) };
         if self.com_owned {
             unsafe { CoUninitialize() };
         }
@@ -210,7 +233,6 @@ impl Drop for DefenderWmi {
 pub enum WmiArg {
     Bool(bool),
     U8(u8),
-    U32(u32),
     Str(String),
     StrArray(Vec<String>),
 }
@@ -220,7 +242,6 @@ impl WmiArg {
         Ok(match self {
             WmiArg::Bool(b) => variant_bool(*b),
             WmiArg::U8(v) => variant_ui1(*v),
-            WmiArg::U32(v) => variant_ui4(*v),
             WmiArg::Str(s) => variant_bstr(s),
             WmiArg::StrArray(items) => variant_bstr_array(items)?,
         })
@@ -260,20 +281,6 @@ fn variant_ui1(v: u8) -> VARIANT {
     }
 }
 
-fn variant_ui4(v: u32) -> VARIANT {
-    VARIANT {
-        Anonymous: VARIANT_0 {
-            Anonymous: ManuallyDrop::new(VARIANT_0_0 {
-                vt: VT_UI4,
-                wReserved1: 0,
-                wReserved2: 0,
-                wReserved3: 0,
-                Anonymous: VARIANT_0_0_0 { ulVal: v },
-            }),
-        },
-    }
-}
-
 fn variant_bstr(s: &str) -> VARIANT {
     VARIANT {
         Anonymous: VARIANT_0 {
@@ -293,7 +300,7 @@ fn variant_bstr(s: &str) -> VARIANT {
 fn variant_bstr_array(items: &[String]) -> Result<VARIANT, Box<dyn std::error::Error>> {
     let psa = unsafe { SafeArrayCreateVector(VT_BSTR, 0, items.len() as u32) };
     if psa.is_null() {
-        bail!("SafeArrayCreateVector failed");
+        return Err("SafeArrayCreateVector failed".into());
     }
     for (i, s) in items.iter().enumerate() {
         let bstr = BSTR::from(s.as_str());
@@ -329,7 +336,10 @@ fn object_to_json(obj: &IWbemClassObject) -> Result<Value, Box<dyn std::error::E
         let mut val: VARIANT = unsafe { std::mem::zeroed() };
         let mut vtype = 0i32;
         let mut flavor = 0i32;
-        if unsafe { obj.Next(0, &mut name, &mut val, &mut vtype, &mut flavor) }.is_err() {
+        let step = unsafe { obj.Next(0, &mut name, &mut val, &mut vtype, &mut flavor) };
+        // At end of enumeration `Next` yields WBEM_S_NO_MORE_DATA — a *success* HRESULT
+        // in windows-rs (`Ok`) — with an empty name. Guard on both to avoid an infinite loop.
+        if step.is_err() || name.is_empty() {
             unsafe {
                 let _ = VariantClear(&mut val);
             }
