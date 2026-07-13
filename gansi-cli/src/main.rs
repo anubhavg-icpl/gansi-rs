@@ -100,8 +100,8 @@ enum Commands {
     },
 
     /// Microsoft Defender Antivirus management (status, scans, exclusions, prefs)
-    #[command(visible_alias = "def")]
-    Defender(#[command(subcommand)] DefenderCmd),
+    #[command(visible_alias = "def", subcommand)]
+    Defender(DefenderCmd),
 }
 
 fn clap_styles() -> clap::builder::Styles {
